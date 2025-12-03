@@ -1,17 +1,21 @@
-import React, { useMemo } from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
-import { Text, Card, Chip, useTheme } from 'react-native-paper';
+import React, { useMemo, useState } from 'react';
+import { View, StyleSheet, ScrollView, Alert } from 'react-native';
+import { Text, Card, Chip, useTheme, Button, Snackbar } from 'react-native-paper';
 import { useFasting } from '../context/FastingContext';
 import { calculateFastSchedule, getWeekType, getCurrentPhase } from '../utils/fastingCalculations';
 import { getPhaseColors } from '../constants/theme';
 import { useColorScheme } from 'react-native';
 import { format, addDays, startOfWeek, eachDayOfInterval, isSameDay } from 'date-fns';
+import { formatEventTitle } from '../utils/calendar';
+import * as Haptics from 'expo-haptics';
 
 export function ScheduleScreen() {
   const theme = useTheme();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const { state } = useFasting();
+  const { state, syncToCalendar: contextSyncToCalendar } = useFasting();
+  const [snackbarVisible, setSnackbarVisible] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
 
   const schedule = useMemo(() => {
     if (!state.settings.weekStartDate) return [];
@@ -37,7 +41,7 @@ export function ScheduleScreen() {
   }, [state.settings.weekStartDate]);
 
   const getDayColor = (date: Date, weekType: 'active' | 'recovery') => {
-    const currentPhase = getCurrentPhase(state.settings.weekStartDate, date, state.settings);
+    const currentPhase = getCurrentPhase(state.settings.weekStartDate, date, state.settings, state.manualAdjustment);
     const phaseColors = getPhaseColors(currentPhase.phase, isDark);
 
     if (currentPhase.phase === 'fast_1' || currentPhase.phase === 'fast_2') {
@@ -54,7 +58,7 @@ export function ScheduleScreen() {
   };
 
   const getDayLabel = (date: Date) => {
-    const currentPhase = getCurrentPhase(state.settings.weekStartDate, date, state.settings);
+    const currentPhase = getCurrentPhase(state.settings.weekStartDate, date, state.settings, state.manualAdjustment);
     if (currentPhase.phase === 'fast_1') return 'Fast 1';
     if (currentPhase.phase === 'fast_2') return 'Fast 2';
     if (currentPhase.phase === 'eating_window_1') return 'Eating';
@@ -62,6 +66,65 @@ export function ScheduleScreen() {
     if (currentPhase.phase === 'recovery_eating_window') return 'Eating';
     return 'Fasting';
   };
+
+  const isEventSynced = (startTime: Date, endTime: Date): boolean => {
+    return state.calendarEvents.some(
+      (event) =>
+        event.startTime.getTime() === startTime.getTime() &&
+        event.endTime.getTime() === endTime.getTime() &&
+        event.synced
+    );
+  };
+
+  async function handleSyncAllToCalendar() {
+    try {
+      let syncedCount = 0;
+      let failedCount = 0;
+
+      for (const week of schedule) {
+        for (const daySchedule of week.schedule) {
+          if (daySchedule.phase === 'fast_1' || daySchedule.phase === 'fast_2') {
+            // Check if already synced
+            if (isEventSynced(daySchedule.startTime, daySchedule.endTime)) {
+              continue;
+            }
+
+            const durationHours = Math.round(
+              (daySchedule.endTime.getTime() - daySchedule.startTime.getTime()) / (1000 * 60 * 60)
+            );
+            const synced = await contextSyncToCalendar({
+              title: formatEventTitle(daySchedule.phase, durationHours),
+              startTime: daySchedule.startTime,
+              endTime: daySchedule.endTime,
+              phase: daySchedule.phase,
+              notes: `Fasting period: ${getDayLabel(daySchedule.date)}`,
+            });
+
+            if (synced) {
+              syncedCount++;
+            } else {
+              failedCount++;
+            }
+          }
+        }
+      }
+
+      if (syncedCount > 0) {
+        setSnackbarMessage(`Synced ${syncedCount} event(s) to calendar${failedCount > 0 ? `, ${failedCount} failed` : ''}`);
+        setSnackbarVisible(true);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else if (failedCount > 0) {
+        setSnackbarMessage('Failed to sync events. Please check calendar permissions.');
+        setSnackbarVisible(true);
+      } else {
+        setSnackbarMessage('All events are already synced');
+        setSnackbarVisible(true);
+      }
+    } catch (error) {
+      setSnackbarMessage('Error syncing to calendar');
+      setSnackbarVisible(true);
+    }
+  }
 
   if (!state.isInitialized) {
     return (
@@ -75,6 +138,25 @@ export function ScheduleScreen() {
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <Card style={styles.syncCard} mode="outlined">
+        <Card.Content>
+          <View style={styles.syncHeader}>
+            <Text variant="titleMedium">Calendar Sync</Text>
+            <Chip icon="calendar-check" style={styles.syncChip}>
+              {state.calendarEvents.filter((e) => e.synced).length} synced
+            </Chip>
+          </View>
+          <Button
+            mode="contained"
+            onPress={handleSyncAllToCalendar}
+            style={styles.syncButton}
+            icon="calendar-sync"
+          >
+            Sync All to Calendar
+          </Button>
+        </Card.Content>
+      </Card>
+
       {schedule.map((week, weekIndex) => (
         <Card key={weekIndex} style={styles.weekCard} mode="outlined">
           <Card.Content>
@@ -99,6 +181,9 @@ export function ScheduleScreen() {
                 const isToday = isSameDay(day, currentDate);
                 const dayColor = getDayColor(day, week.weekType);
                 const dayLabel = getDayLabel(day);
+                const dayPhase = getCurrentPhase(state.settings.weekStartDate, day, state.settings, state.manualAdjustment);
+                const isSynced = (dayPhase.phase === 'fast_1' || dayPhase.phase === 'fast_2') &&
+                  isEventSynced(dayPhase.startTime, dayPhase.endTime);
 
                 return (
                   <View
@@ -124,6 +209,16 @@ export function ScheduleScreen() {
                       <Text variant="bodySmall" style={styles.dayLabel}>
                         {dayLabel}
                       </Text>
+                      {isSynced && (
+                        <Chip
+                          icon="calendar-check"
+                          style={styles.syncedChip}
+                          textStyle={styles.syncedChipText}
+                          compact
+                        >
+                          Synced
+                        </Chip>
+                      )}
                     </View>
                   </View>
                 );
@@ -160,6 +255,14 @@ export function ScheduleScreen() {
           </View>
         </Card.Content>
       </Card>
+
+      <Snackbar
+        visible={snackbarVisible}
+        onDismiss={() => setSnackbarVisible(false)}
+        duration={3000}
+      >
+        {snackbarMessage}
+      </Snackbar>
     </ScrollView>
   );
 }
@@ -170,6 +273,21 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
+  },
+  syncCard: {
+    marginBottom: 16,
+  },
+  syncHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  syncChip: {
+    marginLeft: 8,
+  },
+  syncButton: {
+    marginTop: 8,
   },
   weekCard: {
     marginBottom: 16,
@@ -214,6 +332,14 @@ const styles = StyleSheet.create({
   dayLabel: {
     fontSize: 10,
     textAlign: 'center',
+    marginBottom: 4,
+  },
+  syncedChip: {
+    marginTop: 4,
+    height: 20,
+  },
+  syncedChipText: {
+    fontSize: 8,
   },
   legendCard: {
     marginTop: 8,

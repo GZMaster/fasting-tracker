@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
-import { Text, Card, Chip, useTheme } from 'react-native-paper';
+import { View, StyleSheet, ScrollView, Alert } from 'react-native';
+import { Text, Card, Chip, useTheme, Snackbar } from 'react-native-paper';
 import { useFasting } from '../context/FastingContext';
 import { Timer } from '../components/Timer';
 import { PhaseIndicator } from '../components/PhaseIndicator';
+import { TimerControls } from '../components/TimerControls';
 import { getPhaseDisplayName } from '../utils/fastingCalculations';
 import { getPhaseColors } from '../constants/theme';
 import { useColorScheme } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { format } from 'date-fns';
+import type { PhaseInfo } from '../types';
 
 const milestones = [
   { hours: 12, label: '12 Hours', message: 'Great start! You\'ve reached 12 hours.' },
@@ -28,10 +30,12 @@ export function TimerScreen() {
   const theme = useTheme();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const { state, updatePhase } = useFasting();
+  const { state, updatePhase, setManualTimer, clearManualTimer, syncToCalendar } = useFasting();
   const [currentMessage, setCurrentMessage] = useState(
     motivationalMessages[Math.floor(Math.random() * motivationalMessages.length)]
   );
+  const [snackbarVisible, setSnackbarVisible] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
 
   const currentPhase = state.currentPhase;
   const phaseColors = currentPhase
@@ -80,6 +84,72 @@ export function TimerScreen() {
 
     return () => clearInterval(interval);
   }, []);
+
+  async function handleSetTimer(startTime: Date, endTime: Date, phase: PhaseInfo['phase']) {
+    try {
+      await setManualTimer(startTime, endTime, phase);
+      setSnackbarMessage('Manual timer set successfully');
+      setSnackbarVisible(true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      setSnackbarMessage('Failed to set manual timer');
+      setSnackbarVisible(true);
+    }
+  }
+
+  async function handleClearTimer() {
+    try {
+      await clearManualTimer();
+      setSnackbarMessage('Manual timer cleared');
+      setSnackbarVisible(true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (error) {
+      setSnackbarMessage('Failed to clear manual timer');
+      setSnackbarVisible(true);
+    }
+  }
+
+  async function handleSyncToCalendar() {
+    if (!currentPhase) {
+      Alert.alert('Error', 'No active phase to sync');
+      return;
+    }
+
+    try {
+      const durationHours = Math.round(
+        (currentPhase.endTime.getTime() - currentPhase.startTime.getTime()) / (1000 * 60 * 60)
+      );
+      const synced = await syncToCalendar({
+        title: `${getPhaseDisplayName(currentPhase.phase)} - ${durationHours}h Fast`,
+        startTime: currentPhase.startTime,
+        endTime: currentPhase.endTime,
+        phase: currentPhase.phase,
+        notes: `Fasting period: ${getPhaseDisplayName(currentPhase.phase)}`,
+      });
+
+      if (synced) {
+        setSnackbarMessage('Event synced to calendar');
+        setSnackbarVisible(true);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else {
+        setSnackbarMessage('Failed to sync to calendar. Please check permissions.');
+        setSnackbarVisible(true);
+      }
+    } catch (error) {
+      setSnackbarMessage('Error syncing to calendar');
+      setSnackbarVisible(true);
+    }
+  }
+
+  const isSynced = useMemo(() => {
+    if (!currentPhase) return false;
+    return state.calendarEvents.some(
+      (event) =>
+        event.startTime.getTime() === currentPhase.startTime.getTime() &&
+        event.endTime.getTime() === currentPhase.endTime.getTime() &&
+        event.synced
+    );
+  }, [state.calendarEvents, currentPhase]);
 
   if (!state.isInitialized || !currentPhase) {
     return (
@@ -177,6 +247,25 @@ export function TimerScreen() {
           </Card.Content>
         </Card>
       )}
+
+      <TimerControls
+        onSetTimer={handleSetTimer}
+        onClearTimer={handleClearTimer}
+        onSyncToCalendar={handleSyncToCalendar}
+        currentStartTime={currentPhase.startTime}
+        currentEndTime={currentPhase.endTime}
+        currentPhase={currentPhase.phase}
+        hasManualAdjustment={currentPhase.isManualAdjustment || false}
+        isSynced={isSynced}
+      />
+
+      <Snackbar
+        visible={snackbarVisible}
+        onDismiss={() => setSnackbarVisible(false)}
+        duration={3000}
+      >
+        {snackbarMessage}
+      </Snackbar>
     </ScrollView>
   );
 }

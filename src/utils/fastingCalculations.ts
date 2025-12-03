@@ -1,5 +1,5 @@
-import { differenceInMilliseconds, addHours, addDays, startOfDay, parse, format, isAfter, isBefore } from 'date-fns';
-import type { WeekType, PhaseType, UserSettings, PhaseInfo } from '../types';
+import { differenceInMilliseconds, addHours, addDays, startOfDay, parse, format, isAfter, isBefore, isWithinInterval } from 'date-fns';
+import type { WeekType, PhaseType, UserSettings, PhaseInfo, ManualTimerAdjustment } from '../types';
 
 const FAST_1_DURATION_HOURS = 36;
 const FAST_2_DURATION_HOURS = 36;
@@ -65,12 +65,45 @@ function getWeekStart(date: Date): Date {
 
 /**
  * Calculates the current phase based on week type and current time
+ * Optionally accepts a manual adjustment that overrides the automatic calculation
  */
 export function getCurrentPhase(
   weekStartDate: Date,
   currentDate: Date,
-  settings: UserSettings
+  settings: UserSettings,
+  manualAdjustment?: ManualTimerAdjustment | null
 ): PhaseInfo {
+  // If there's a manual adjustment and we're within its time range, use it
+  if (manualAdjustment) {
+    const now = currentDate.getTime();
+    const adjustmentStart = manualAdjustment.startTime.getTime();
+    const adjustmentEnd = manualAdjustment.endTime.getTime();
+
+    // Check if adjustment has expired
+    if (manualAdjustment.expiresAt && currentDate > manualAdjustment.expiresAt) {
+      // Adjustment expired, fall through to automatic calculation
+    } else if (now >= adjustmentStart && now <= adjustmentEnd) {
+      // We're within the manual adjustment period
+      return {
+        phase: manualAdjustment.phase,
+        startTime: manualAdjustment.startTime,
+        endTime: manualAdjustment.endTime,
+        timeRemaining: calculateTimeRemaining(currentDate, manualAdjustment.endTime),
+        isManualAdjustment: true,
+      };
+    } else if (now < adjustmentStart) {
+      // We're before the manual adjustment starts
+      // Return a phase that shows we're waiting for the manual adjustment
+      return {
+        phase: manualAdjustment.phase,
+        startTime: manualAdjustment.startTime,
+        endTime: manualAdjustment.endTime,
+        timeRemaining: calculateTimeRemaining(currentDate, manualAdjustment.startTime),
+        isManualAdjustment: true,
+      };
+    }
+    // If we're past the adjustment, fall through to automatic calculation
+  }
   const weekType = getWeekType(weekStartDate, currentDate);
   const weekStart = getWeekStart(weekStartDate);
   const currentWeekStart = getWeekStart(currentDate);

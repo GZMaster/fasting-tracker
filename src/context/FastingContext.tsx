@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback, ReactNode } from 'react';
-import type { FastRecord, MealEntry, UserSettings, PhaseInfo, WeightRecord } from '../types';
+import type { FastRecord, MealEntry, UserSettings, PhaseInfo, WeightRecord, ManualTimerAdjustment, CalendarEvent } from '../types';
 import { getCurrentPhase } from '../utils/fastingCalculations';
 import {
   loadFastHistory,
@@ -10,8 +10,13 @@ import {
   saveSettings,
   loadWeightRecords,
   saveWeightRecords,
+  loadManualAdjustments,
+  saveManualAdjustments,
+  loadCalendarEvents,
+  saveCalendarEvents,
 } from '../utils/storage';
 import { schedulePhaseNotifications, requestNotificationPermissions } from '../utils/notifications';
+import { createCalendarEvent as createNativeCalendarEvent, requestCalendarPermissions, hasCalendarPermissions } from '../utils/calendar';
 
 interface FastingState {
   currentPhase: PhaseInfo | null;
@@ -19,6 +24,8 @@ interface FastingState {
   mealEntries: MealEntry[];
   weightRecords: WeightRecord[];
   settings: UserSettings;
+  manualAdjustment: ManualTimerAdjustment | null;
+  calendarEvents: CalendarEvent[];
   isInitialized: boolean;
 }
 
@@ -30,7 +37,10 @@ type FastingAction =
   | { type: 'DELETE_MEAL'; payload: string }
   | { type: 'ADD_WEIGHT'; payload: WeightRecord }
   | { type: 'UPDATE_SETTINGS'; payload: Partial<UserSettings> }
-  | { type: 'LOAD_DATA'; payload: { fasts: FastRecord[]; meals: MealEntry[]; weights: WeightRecord[]; settings: UserSettings } }
+  | { type: 'SET_MANUAL_ADJUSTMENT'; payload: ManualTimerAdjustment | null }
+  | { type: 'ADD_CALENDAR_EVENT'; payload: CalendarEvent }
+  | { type: 'UPDATE_CALENDAR_EVENT'; payload: CalendarEvent }
+  | { type: 'LOAD_DATA'; payload: { fasts: FastRecord[]; meals: MealEntry[]; weights: WeightRecord[]; settings: UserSettings; adjustments: ManualTimerAdjustment[]; calendarEvents: CalendarEvent[] } }
   | { type: 'SET_INITIALIZED'; payload: boolean };
 
 const initialState: FastingState = {
@@ -46,6 +56,8 @@ const initialState: FastingState = {
     notificationsEnabled: true,
     theme: 'automatic',
   },
+  manualAdjustment: null,
+  calendarEvents: [],
   isInitialized: false,
 };
 
@@ -73,6 +85,17 @@ function fastingReducer(state: FastingState, action: FastingAction): FastingStat
       return { ...state, weightRecords: [...state.weightRecords, action.payload] };
     case 'UPDATE_SETTINGS':
       return { ...state, settings: { ...state.settings, ...action.payload } };
+    case 'SET_MANUAL_ADJUSTMENT':
+      return { ...state, manualAdjustment: action.payload };
+    case 'ADD_CALENDAR_EVENT':
+      return { ...state, calendarEvents: [...state.calendarEvents, action.payload] };
+    case 'UPDATE_CALENDAR_EVENT':
+      return {
+        ...state,
+        calendarEvents: state.calendarEvents.map((event) =>
+          event.id === action.payload.id ? action.payload : event
+        ),
+      };
     case 'LOAD_DATA':
       return {
         ...state,
@@ -80,6 +103,11 @@ function fastingReducer(state: FastingState, action: FastingAction): FastingStat
         mealEntries: action.payload.meals,
         weightRecords: action.payload.weights,
         settings: action.payload.settings,
+        manualAdjustment: action.payload.adjustments.find((adj) => {
+          const now = new Date();
+          return (!adj.expiresAt || now <= adj.expiresAt) && now <= adj.endTime;
+        }) || null,
+        calendarEvents: action.payload.calendarEvents,
         isInitialized: true,
       };
     case 'SET_INITIALIZED':
@@ -98,6 +126,9 @@ interface FastingContextType {
   deleteMeal: (mealId: string) => Promise<void>;
   addWeight: (weight: WeightRecord) => Promise<void>;
   updateSettings: (settings: Partial<UserSettings>) => Promise<void>;
+  setManualTimer: (startTime: Date, endTime: Date, phase: PhaseInfo['phase']) => Promise<void>;
+  clearManualTimer: () => Promise<void>;
+  syncToCalendar: (event: Omit<CalendarEvent, 'id' | 'synced' | 'eventId'>) => Promise<boolean>;
   refreshData: () => Promise<void>;
 }
 
@@ -110,21 +141,32 @@ export function FastingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     async function loadInitialData() {
       try {
-        const [fasts, meals, weights, settings] = await Promise.all([
+        const [fasts, meals, weights, settings, adjustments, calendarEvents] = await Promise.all([
           loadFastHistory(),
           loadMealEntries(),
           loadWeightRecords(),
           loadSettings(),
+          loadManualAdjustments(),
+          loadCalendarEvents(),
         ]);
 
         dispatch({
           type: 'LOAD_DATA',
-          payload: { fasts, meals, weights, settings },
+          payload: { fasts, meals, weights, settings, adjustments, calendarEvents },
+        });
+
+        // Check calendar permissions (non-blocking)
+        hasCalendarPermissions().catch(() => {
+          // Silently fail - permissions will be requested when user tries to sync
         });
 
         // Calculate initial phase
         const currentDate = new Date();
-        const phaseInfo = getCurrentPhase(settings.weekStartDate, currentDate, settings);
+        const activeAdjustment = adjustments.find((adj) => {
+          const now = new Date();
+          return (!adj.expiresAt || now <= adj.expiresAt) && now <= adj.endTime;
+        }) || null;
+        const phaseInfo = getCurrentPhase(settings.weekStartDate, currentDate, settings, activeAdjustment);
         dispatch({ type: 'SET_PHASE', payload: phaseInfo });
       } catch (error) {
         console.error('Error loading initial data:', error);
@@ -173,22 +215,30 @@ export function FastingProvider({ children }: { children: ReactNode }) {
           saveMealEntries(state.mealEntries),
           saveWeightRecords(state.weightRecords),
           saveSettings(state.settings),
+          saveCalendarEvents(state.calendarEvents),
         ]);
+        
+        // Save manual adjustments
+        if (state.manualAdjustment) {
+          const allAdjustments = await loadManualAdjustments();
+          const filtered = allAdjustments.filter((adj) => adj.id !== state.manualAdjustment!.id);
+          await saveManualAdjustments([...filtered, state.manualAdjustment]);
+        }
       } catch (error) {
         console.error('Error saving data:', error);
       }
     }
 
     persistData();
-  }, [state.fastHistory, state.mealEntries, state.weightRecords, state.settings, state.isInitialized]);
+  }, [state.fastHistory, state.mealEntries, state.weightRecords, state.settings, state.calendarEvents, state.manualAdjustment, state.isInitialized]);
 
   const updatePhase = useCallback(() => {
     if (!state.isInitialized) return;
 
     const currentDate = new Date();
-    const phaseInfo = getCurrentPhase(state.settings.weekStartDate, currentDate, state.settings);
+    const phaseInfo = getCurrentPhase(state.settings.weekStartDate, currentDate, state.settings, state.manualAdjustment);
     dispatch({ type: 'SET_PHASE', payload: phaseInfo });
-  }, [state.isInitialized, state.settings]);
+  }, [state.isInitialized, state.settings, state.manualAdjustment]);
 
   const addFast = useCallback(async (fast: FastRecord) => {
     dispatch({ type: 'ADD_FAST', payload: fast });
@@ -225,22 +275,101 @@ export function FastingProvider({ children }: { children: ReactNode }) {
     updatePhase();
   }, [state.settings, updatePhase]);
 
+  const setManualTimer = useCallback(async (startTime: Date, endTime: Date, phase: PhaseInfo['phase']) => {
+    const adjustment: ManualTimerAdjustment = {
+      id: `manual_${Date.now()}`,
+      startTime,
+      endTime,
+      phase,
+      createdAt: new Date(),
+    };
+
+    dispatch({ type: 'SET_MANUAL_ADJUSTMENT', payload: adjustment });
+    
+    // Save all adjustments
+    const allAdjustments = await loadManualAdjustments();
+    const filtered = allAdjustments.filter((adj) => adj.id !== adjustment.id);
+    await saveManualAdjustments([...filtered, adjustment]);
+    
+    // Recalculate phase
+    updatePhase();
+  }, [updatePhase]);
+
+  const clearManualTimer = useCallback(async () => {
+    dispatch({ type: 'SET_MANUAL_ADJUSTMENT', payload: null });
+    
+    // Remove active adjustment from storage
+    const allAdjustments = await loadManualAdjustments();
+    const now = new Date();
+    const active = allAdjustments.find((adj) => {
+      return (!adj.expiresAt || now <= adj.expiresAt) && now <= adj.endTime;
+    });
+    
+    if (active) {
+      const filtered = allAdjustments.filter((adj) => adj.id !== active.id);
+      await saveManualAdjustments(filtered);
+    }
+    
+    // Recalculate phase
+    updatePhase();
+  }, [updatePhase]);
+
+  const syncToCalendar = useCallback(async (event: Omit<CalendarEvent, 'id' | 'synced' | 'eventId'>): Promise<boolean> => {
+    try {
+      const hasPermissions = await hasCalendarPermissions();
+      if (!hasPermissions) {
+        const granted = await requestCalendarPermissions();
+        if (!granted) {
+          return false;
+        }
+      }
+
+      const eventId = await createNativeCalendarEvent(event);
+      if (!eventId) {
+        return false;
+      }
+
+      const calendarEvent: CalendarEvent = {
+        id: `cal_${Date.now()}`,
+        eventId,
+        ...event,
+        synced: true,
+      };
+
+      dispatch({ type: 'ADD_CALENDAR_EVENT', payload: calendarEvent });
+      
+      const allEvents = await loadCalendarEvents();
+      await saveCalendarEvents([...allEvents, calendarEvent]);
+      
+      return true;
+    } catch (error) {
+      console.error('Error syncing to calendar:', error);
+      return false;
+    }
+  }, []);
+
   const refreshData = useCallback(async () => {
     try {
-      const [fasts, meals, weights, settings] = await Promise.all([
+      const [fasts, meals, weights, settings, adjustments, calendarEvents] = await Promise.all([
         loadFastHistory(),
         loadMealEntries(),
         loadWeightRecords(),
         loadSettings(),
+        loadManualAdjustments(),
+        loadCalendarEvents(),
       ]);
 
       dispatch({
         type: 'LOAD_DATA',
-        payload: { fasts, meals, weights, settings },
+        payload: { fasts, meals, weights, settings, adjustments, calendarEvents },
       });
 
       const currentDate = new Date();
-      const phaseInfo = getCurrentPhase(settings.weekStartDate, currentDate, settings);
+      const activeAdjustment = adjustments.find((adj) => {
+        const now = new Date();
+        return (!adj.expiresAt || now <= adj.expiresAt) && now <= adj.endTime;
+      }) || null;
+      const phaseInfo = getCurrentPhase(settings.weekStartDate, currentDate, settings, activeAdjustment);
       dispatch({ type: 'SET_PHASE', payload: phaseInfo });
     } catch (error) {
       console.error('Error refreshing data:', error);
@@ -256,6 +385,9 @@ export function FastingProvider({ children }: { children: ReactNode }) {
     deleteMeal,
     addWeight,
     updateSettings,
+    setManualTimer,
+    clearManualTimer,
+    syncToCalendar,
     refreshData,
   };
 

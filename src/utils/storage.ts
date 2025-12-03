@@ -1,11 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { FastRecord, MealEntry, UserSettings, WeightRecord } from '../types';
+import type { FastRecord, MealEntry, UserSettings, WeightRecord, ManualTimerAdjustment, CalendarEvent } from '../types';
 
 const STORAGE_KEYS = {
   FAST_HISTORY: '@fasting_tracker:fast_history',
   MEAL_ENTRIES: '@fasting_tracker:meal_entries',
   SETTINGS: '@fasting_tracker:settings',
   WEIGHT_RECORDS: '@fasting_tracker:weight_records',
+  MANUAL_ADJUSTMENTS: '@fasting_tracker:manual_adjustments',
+  CALENDAR_EVENTS: '@fasting_tracker:calendar_events',
 } as const;
 
 // Default settings
@@ -153,6 +155,74 @@ export async function loadWeightRecords(): Promise<WeightRecord[]> {
   }
 }
 
+// Manual Timer Adjustments Storage
+export async function saveManualAdjustments(adjustments: ManualTimerAdjustment[]): Promise<void> {
+  try {
+    const serialized = adjustments.map((adj) => ({
+      ...adj,
+      startTime: adj.startTime.toISOString(),
+      endTime: adj.endTime.toISOString(),
+      createdAt: adj.createdAt.toISOString(),
+      expiresAt: adj.expiresAt?.toISOString(),
+    }));
+    await AsyncStorage.setItem(STORAGE_KEYS.MANUAL_ADJUSTMENTS, JSON.stringify(serialized));
+  } catch (error) {
+    console.error('Error saving manual adjustments:', error);
+    throw error;
+  }
+}
+
+export async function loadManualAdjustments(): Promise<ManualTimerAdjustment[]> {
+  try {
+    const data = await AsyncStorage.getItem(STORAGE_KEYS.MANUAL_ADJUSTMENTS);
+    if (!data) return [];
+
+    const parsed = JSON.parse(data);
+    return parsed.map((adj: any) => ({
+      ...adj,
+      startTime: new Date(adj.startTime),
+      endTime: new Date(adj.endTime),
+      createdAt: new Date(adj.createdAt),
+      expiresAt: adj.expiresAt ? new Date(adj.expiresAt) : undefined,
+    }));
+  } catch (error) {
+    console.error('Error loading manual adjustments:', error);
+    return [];
+  }
+}
+
+// Calendar Events Storage
+export async function saveCalendarEvents(events: CalendarEvent[]): Promise<void> {
+  try {
+    const serialized = events.map((event) => ({
+      ...event,
+      startTime: event.startTime.toISOString(),
+      endTime: event.endTime.toISOString(),
+    }));
+    await AsyncStorage.setItem(STORAGE_KEYS.CALENDAR_EVENTS, JSON.stringify(serialized));
+  } catch (error) {
+    console.error('Error saving calendar events:', error);
+    throw error;
+  }
+}
+
+export async function loadCalendarEvents(): Promise<CalendarEvent[]> {
+  try {
+    const data = await AsyncStorage.getItem(STORAGE_KEYS.CALENDAR_EVENTS);
+    if (!data) return [];
+
+    const parsed = JSON.parse(data);
+    return parsed.map((event: any) => ({
+      ...event,
+      startTime: new Date(event.startTime),
+      endTime: new Date(event.endTime),
+    }));
+  } catch (error) {
+    console.error('Error loading calendar events:', error);
+    return [];
+  }
+}
+
 // Clear all data (for reset functionality)
 export async function clearAllData(): Promise<void> {
   try {
@@ -161,6 +231,8 @@ export async function clearAllData(): Promise<void> {
       STORAGE_KEYS.MEAL_ENTRIES,
       STORAGE_KEYS.SETTINGS,
       STORAGE_KEYS.WEIGHT_RECORDS,
+      STORAGE_KEYS.MANUAL_ADJUSTMENTS,
+      STORAGE_KEYS.CALENDAR_EVENTS,
     ]);
   } catch (error) {
     console.error('Error clearing data:', error);

@@ -41,6 +41,27 @@ export interface PhaseInfo {
   startTime: Date;
   endTime: Date;
   timeRemaining: number; // in milliseconds
+  isManualAdjustment?: boolean; // true if this phase is manually adjusted
+}
+
+export interface ManualTimerAdjustment {
+  id: string;
+  startTime: Date;
+  endTime: Date;
+  phase: PhaseType;
+  createdAt: Date;
+  expiresAt?: Date; // Optional expiration date for the adjustment
+}
+
+export interface CalendarEvent {
+  id: string;
+  eventId?: string; // Native calendar event ID
+  title: string;
+  startTime: Date;
+  endTime: Date;
+  phase: PhaseType;
+  synced: boolean; // Whether it's synced to device calendar
+  notes?: string;
 }
 
 export interface WeightRecord {
