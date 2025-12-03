@@ -1,10 +1,13 @@
-import React, { useState } from 'react';
-import { View, StyleSheet, Platform } from 'react-native';
-import { Text, Button, Card, useTheme, Portal, Dialog, SegmentedButtons } from 'react-native-paper';
-import DateTimePicker from '@react-native-community/datetimepicker';
+import React, { useState, useEffect } from 'react';
+import { View, StyleSheet, Platform, Dimensions, Modal } from 'react-native';
+import { Text, Button, Card, useTheme, Portal, Dialog } from 'react-native-paper';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { format } from 'date-fns';
 import type { PhaseType } from '../types';
 import { getPhaseDisplayName } from '../utils/fastingCalculations';
+
+const { width } = Dimensions.get('window');
+const isSmallScreen = width < 375;
 
 interface TimerControlsProps {
   onSetTimer: (startTime: Date, endTime: Date, phase: PhaseType) => void;
@@ -37,6 +40,25 @@ export function TimerControls({
 
   const phases: PhaseType[] = ['fast_1', 'fast_2', 'eating_window_1', 'daily_eating_window', 'recovery_eating_window'];
 
+  // Sync state with props when they change
+  useEffect(() => {
+    if (currentStartTime) {
+      setStartTime(currentStartTime);
+    }
+  }, [currentStartTime]);
+
+  useEffect(() => {
+    if (currentEndTime) {
+      setEndTime(currentEndTime);
+    }
+  }, [currentEndTime]);
+
+  useEffect(() => {
+    if (currentPhase) {
+      setSelectedPhase(currentPhase);
+    }
+  }, [currentPhase]);
+
   function handleSetTimer() {
     if (endTime <= startTime) {
       // Show error - end time must be after start time
@@ -48,33 +70,55 @@ export function TimerControls({
     setShowPhasePicker(false);
   }
 
-  function handleStartTimeChange(event: any, date?: Date) {
+  function handleStartTimeChange(event: DateTimePickerEvent, date?: Date) {
     if (Platform.OS === 'android') {
+      // Android - only update on 'set', close picker after
+      if (event.type === 'set' && date) {
+        setStartTime(date);
+        // Auto-adjust end time if it's before new start time
+        if (endTime <= date) {
+          const newEndTime = new Date(date);
+          newEndTime.setHours(date.getHours() + 36);
+          setEndTime(newEndTime);
+        }
+      }
+      // Close picker for both 'set' and 'dismissed'
       setShowStartPicker(false);
-    }
-    if (date) {
-      setStartTime(date);
-      // Auto-adjust end time if it's before new start time
-      if (endTime <= date) {
-        const newEndTime = new Date(date);
-        newEndTime.setHours(date.getHours() + 36);
-        setEndTime(newEndTime);
+    } else {
+      // iOS - date is always provided and updates continuously as user scrolls
+      // Don't close picker here, let user press Done/Cancel
+      if (date) {
+        setStartTime(date);
+        // Auto-adjust end time if it's before new start time
+        if (endTime <= date) {
+          const newEndTime = new Date(date);
+          newEndTime.setHours(date.getHours() + 36);
+          setEndTime(newEndTime);
+        }
       }
     }
   }
 
-  function handleEndTimeChange(event: any, date?: Date) {
+  function handleEndTimeChange(event: DateTimePickerEvent, date?: Date) {
     if (Platform.OS === 'android') {
+      // Android - only update on 'set', close picker after
+      if (event.type === 'set' && date && date > startTime) {
+        setEndTime(date);
+      }
+      // Close picker for both 'set' and 'dismissed'
       setShowEndPicker(false);
-    }
-    if (date && date > startTime) {
-      setEndTime(date);
+    } else {
+      // iOS - date is always provided and updates continuously as user scrolls
+      // Don't close picker here, let user press Done/Cancel
+      if (date && date > startTime) {
+        setEndTime(date);
+      }
     }
   }
 
   return (
     <Card style={styles.card} mode="outlined">
-      <Card.Content>
+      <Card.Content style={styles.cardContent}>
         <View style={styles.header}>
           <Text variant="titleMedium" style={styles.title}>
             Manual Timer Controls
@@ -111,6 +155,8 @@ export function TimerControls({
                 onPress={() => setShowStartPicker(true)}
                 style={styles.timeButton}
                 icon="clock-outline"
+                contentStyle={styles.buttonContent}
+                labelStyle={styles.buttonLabel}
               >
                 {format(startTime, 'MMM d, h:mm a')}
               </Button>
@@ -125,6 +171,8 @@ export function TimerControls({
                 onPress={() => setShowEndPicker(true)}
                 style={styles.timeButton}
                 icon="clock-outline"
+                contentStyle={styles.buttonContent}
+                labelStyle={styles.buttonLabel}
               >
                 {format(endTime, 'MMM d, h:mm a')}
               </Button>
@@ -140,6 +188,8 @@ export function TimerControls({
               onPress={() => setShowPhasePicker(true)}
               style={styles.phaseButton}
               icon="calendar-clock"
+              contentStyle={styles.buttonContent}
+              labelStyle={styles.buttonLabel}
             >
               {getPhaseDisplayName(selectedPhase)}
             </Button>
@@ -149,8 +199,10 @@ export function TimerControls({
             <Button
               mode="contained"
               onPress={handleSetTimer}
-              style={styles.actionButton}
+              style={[styles.actionButton, styles.primaryActionButton]}
               disabled={endTime <= startTime}
+              contentStyle={styles.actionButtonContent}
+              labelStyle={styles.actionButtonLabel}
             >
               Set Timer
             </Button>
@@ -160,8 +212,10 @@ export function TimerControls({
                 onPress={onClearTimer}
                 style={styles.actionButton}
                 icon="close-circle"
+                contentStyle={styles.actionButtonContent}
+                labelStyle={styles.actionButtonLabel}
               >
-                Clear Manual
+                Clear
               </Button>
             )}
             <Button
@@ -170,30 +224,63 @@ export function TimerControls({
               style={styles.actionButton}
               icon={isSynced ? 'calendar-check' : 'calendar-plus'}
               disabled={!hasManualAdjustment && !currentStartTime}
+              contentStyle={styles.actionButtonContent}
+              labelStyle={styles.actionButtonLabel}
             >
-              {isSynced ? 'Synced' : 'Sync to Calendar'}
+              {isSynced ? 'Synced' : isSmallScreen ? 'Sync' : 'Sync to Calendar'}
             </Button>
           </View>
         </View>
 
-        {Platform.OS === 'ios' && showStartPicker && (
-          <DateTimePicker
-            value={startTime}
-            mode="datetime"
-            display="spinner"
-            onChange={handleStartTimeChange}
-            minimumDate={new Date()}
-          />
-        )}
-
-        {Platform.OS === 'ios' && showEndPicker && (
-          <DateTimePicker
-            value={endTime}
-            mode="datetime"
-            display="spinner"
-            onChange={handleEndTimeChange}
-            minimumDate={startTime}
-          />
+        {Platform.OS === 'ios' && (
+          <>
+            <Modal
+              visible={showStartPicker}
+              transparent
+              animationType="slide"
+              onRequestClose={() => setShowStartPicker(false)}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.iosPickerContainer}>
+                  <View style={styles.iosPickerHeader}>
+                    <Button onPress={() => setShowStartPicker(false)}>Cancel</Button>
+                    <Text variant="titleMedium">Select Start Time</Text>
+                    <Button onPress={() => setShowStartPicker(false)}>Done</Button>
+                  </View>
+                  <DateTimePicker
+                    value={startTime}
+                    mode="datetime"
+                    display="spinner"
+                    onChange={handleStartTimeChange}
+                    minimumDate={new Date()}
+                  />
+                </View>
+              </View>
+            </Modal>
+            <Modal
+              visible={showEndPicker}
+              transparent
+              animationType="slide"
+              onRequestClose={() => setShowEndPicker(false)}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.iosPickerContainer}>
+                  <View style={styles.iosPickerHeader}>
+                    <Button onPress={() => setShowEndPicker(false)}>Cancel</Button>
+                    <Text variant="titleMedium">Select End Time</Text>
+                    <Button onPress={() => setShowEndPicker(false)}>Done</Button>
+                  </View>
+                  <DateTimePicker
+                    value={endTime}
+                    mode="datetime"
+                    display="spinner"
+                    onChange={handleEndTimeChange}
+                    minimumDate={startTime}
+                  />
+                </View>
+              </View>
+            </Modal>
+          </>
         )}
 
         {Platform.OS === 'android' && showStartPicker && (
@@ -216,31 +303,37 @@ export function TimerControls({
           />
         )}
 
-        <Portal>
-          <Dialog visible={showPhasePicker} onDismiss={() => setShowPhasePicker(false)}>
-            <Dialog.Title>Select Phase Type</Dialog.Title>
-            <Dialog.Content>
-              <View style={styles.phaseOptions}>
-                {phases.map((phase) => (
-                  <Button
-                    key={phase}
-                    mode={selectedPhase === phase ? 'contained' : 'outlined'}
-                    onPress={() => {
-                      setSelectedPhase(phase);
-                      setShowPhasePicker(false);
-                    }}
-                    style={styles.phaseOption}
-                  >
-                    {getPhaseDisplayName(phase)}
-                  </Button>
-                ))}
-              </View>
-            </Dialog.Content>
-            <Dialog.Actions>
-              <Button onPress={() => setShowPhasePicker(false)}>Cancel</Button>
-            </Dialog.Actions>
-          </Dialog>
-        </Portal>
+        {showPhasePicker && (
+          <Portal>
+            <Dialog
+              visible={showPhasePicker}
+              onDismiss={() => setShowPhasePicker(false)}
+              dismissable
+            >
+              <Dialog.Title>Select Phase Type</Dialog.Title>
+              <Dialog.Content>
+                <View style={styles.phaseOptions}>
+                  {phases.map((phase) => (
+                    <Button
+                      key={phase}
+                      mode={selectedPhase === phase ? 'contained' : 'outlined'}
+                      onPress={() => {
+                        setSelectedPhase(phase);
+                        setShowPhasePicker(false);
+                      }}
+                      style={styles.phaseOption}
+                    >
+                      {getPhaseDisplayName(phase)}
+                    </Button>
+                  ))}
+                </View>
+              </Dialog.Content>
+              <Dialog.Actions>
+                <Button onPress={() => setShowPhasePicker(false)}>Cancel</Button>
+              </Dialog.Actions>
+            </Dialog>
+          </Portal>
+        )}
       </Card.Content>
     </Card>
   );
@@ -249,18 +342,28 @@ export function TimerControls({
 const styles = StyleSheet.create({
   card: {
     marginVertical: 8,
+    marginHorizontal: 0,
+    width: '100%',
+    maxWidth: '100%',
+  },
+  cardContent: {
+    paddingHorizontal: 4,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
+    flexWrap: 'wrap',
   },
   title: {
     fontWeight: 'bold',
+    flex: 1,
+    minWidth: 150,
   },
   indicator: {
     fontWeight: '600',
+    marginLeft: 8,
   },
   currentTimes: {
     backgroundColor: '#f5f5f5',
@@ -276,38 +379,87 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   timeRow: {
-    flexDirection: 'row',
+    flexDirection: isSmallScreen ? 'column' : 'row',
     gap: 12,
   },
   timeControl: {
-    flex: 1,
+    flex: isSmallScreen ? 0 : 1,
+    minWidth: 0,
   },
   label: {
-    marginBottom: 8,
+    marginBottom: 6,
+    fontSize: 13,
   },
   timeButton: {
     width: '100%',
+    minHeight: 48,
+    maxWidth: '100%',
+  },
+  buttonContent: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  buttonLabel: {
+    fontSize: 13,
+    flexShrink: 1,
+    maxWidth: '100%',
   },
   phaseControl: {
     width: '100%',
   },
   phaseButton: {
     width: '100%',
+    minHeight: 48,
+    maxWidth: '100%',
   },
   actionButtons: {
-    flexDirection: 'row',
-    gap: 8,
-    flexWrap: 'wrap',
+    flexDirection: isSmallScreen ? 'column' : 'row',
+    gap: 10,
+    marginTop: 4,
   },
   actionButton: {
-    flex: 1,
-    minWidth: 100,
+    flex: isSmallScreen ? 0 : 1,
+    minWidth: isSmallScreen ? '100%' : 100,
+    maxWidth: isSmallScreen ? '100%' : undefined,
+    minHeight: 44,
+  },
+  primaryActionButton: {
+    flex: isSmallScreen ? 0 : 1.2,
+  },
+  actionButtonContent: {
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+  },
+  actionButtonLabel: {
+    fontSize: 14,
+    flexShrink: 1,
   },
   phaseOptions: {
     gap: 8,
   },
   phaseOption: {
     marginBottom: 8,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  iosPickerContainer: {
+    backgroundColor: 'white',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 20,
+    maxHeight: '50%',
+  },
+  iosPickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
   },
 });
 

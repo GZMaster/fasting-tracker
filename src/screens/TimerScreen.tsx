@@ -276,6 +276,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
+    paddingBottom: 32,
     alignItems: 'center',
   },
   header: {
@@ -288,6 +289,7 @@ const styles = StyleSheet.create({
   },
   infoCard: {
     width: '100%',
+    maxWidth: '100%',
     marginVertical: 16,
   },
   infoTitle: {
@@ -303,6 +305,7 @@ const styles = StyleSheet.create({
   },
   milestoneCard: {
     width: '100%',
+    maxWidth: '100%',
     marginVertical: 16,
   },
   milestoneTitle: {
@@ -324,6 +327,7 @@ const styles = StyleSheet.create({
   },
   messageCard: {
     width: '100%',
+    maxWidth: '100%',
     marginVertical: 16,
   },
   messageText: {
